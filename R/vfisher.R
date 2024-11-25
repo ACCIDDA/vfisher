@@ -27,27 +27,46 @@ dnhyper <- function(ncp, logdc, support) {
 
 mnhyper <- function(ncp, lo, hi, logdc, support) {
   lims <- which(ncp == 0 | is.infinite(ncp))
-  if (ncp == 0) {
-    return(lo)
-  } else if (ncp == Inf) {
-    return(hi)
-  } else {
-    return(sum(support * dnhyper(ncp, logdc, support)))
-  }
+  res <- integer(length(lo))
+  res[lims] <- ifelse(ncp[lims] == 0, lo[lims], hi[lims])
+  res[-lims] <- mapply(
+    function(ncp, logdc, support) {
+      sum(support * dnhyper(ncp, logdc, support))
+    },
+    ncp = ncp[-lims], logdc = logdc[-lims], support = support[-lims]
+  )
+  return(res)
 }
 
 pnhyper <- function(
-  q, ncp = 1, upper.tail = FALSE, m, n, k
+  q, ncp = 1, upper.tail = FALSE, m, n, k, lo, hi, support, logdc
 ) {
-  if (ncp == 1) {
-    phyper(x - upper.tail, m, n, k, lower.tail = !upper.tail)
-  } else if (ncp == 0) {
-    return(as.numeric(if (upper.tail) q <= lo else q >= lo))
-  } else if (ncp == Inf) {
-    return(as.numeric(if (upper.tail) q <= hi else q >= hi))
-  } else {
-    return(sum(dnhyper(ncp)[if (upper.tail) support >= q else support <= q]))
-  }
+
+  lims <- which(ncp == 0 | is.infinite(ncp))
+  ones <- which(ncp == 1)
+  ncp1 <- which(ncp == 1)
+  res <- numeric(length(q))
+
+  res[lims] <- ifelse(
+    ncp == 0,
+    as.numeric(if (upper.tail) q <= lo else q >= lo),
+    as.numeric(if (upper.tail) q <= hi else q >= hi)
+  )
+
+  res[ones] <- phyper(
+    x[ones] - upper.tail, m[ones], n[ones], k[ones],
+    lower.tail = !upper.tail
+  )
+
+  res[-c(ones, lims)] <- mapply(
+    function(q, ncp, logdc, support) {
+      sum(dnhyper(ncp, logdc, support)[if (upper.tail) support >= q else support <= q])
+    },
+    q = q[-c(ones, lims)], ncp = ncp[-c(ones, lims)], logdc = logdc[-c(ones, lims)],
+    support = support[-c(ones, lims)]
+  )
+
+  return(res)
 }
 
 #' @title Vectorized fisher.test
@@ -119,95 +138,55 @@ vfisher.test <- function(
   lo <- pmax(0L, k - n)
   hi <- pmin(k, m)
 
-  core <- function(m, n, k, x, lo, hi) {
+  mle <- numeric(length(lo))
+  mle[x == lo] <- 0
+  mle[x == hi] <- Inf
+  nothilo <- !((x == lo) | (x == hi))
 
+  mle[nothilo] <- {
+    mu <- mnhyper(1, lo[nothilo], hi[nothilo], logdc[nothilo], support[nothilo])
+    lemu <- mi < x[nothilo]
+    res <- numeric(length(x[nothilo]))
+
+    res[lemu] <- mapply(function(lo, hi, logdc) {
+      1/uniroot(function(t) mnhyper(1/t, lo, hi, logdc, support) - x, c(.Machine$double.eps, 1))$root
+    }, lo = lo[lemu], hi = hi[lemu], logdc = logdc[lemu])
+    res[-lemu] <- mapply(function(lo, hi, logdc) {
+      uniroot(function(t) mnhyper(t, lo, hi, logdc) - x, c(0, 1))$root
+    }, lo = lo[-lemu], hi = hi[-lemu], logdc = logdc[-lemu])
+    res
   }
 
-  mapply(function(
-    lo, hi
-  ) {
-    support <- lo:hi
-    logdc <- dhyper(support, m, n, k, log = TRUE)
-    dnhyper <- function(ncp) {
-      d <- logdc + log(ncp) * support
-      d <- exp(d - max(d))
-      d/sum(d)
-    }
-    mnhyper <- function(ncp) {
-      if (ncp == 0) return(lo)
-      if (ncp == Inf) return(hi)
-      sum(support * dnhyper(ncp))
-    }
-    pnhyper <- function(q, ncp = 1, upper.tail = FALSE) {
-      if (ncp == 1) {
-        phyper(x - upper.tail, m, n, k, lower.tail = !upper.tail)
-      }
-      if (ncp == 0) {
-        return(as.numeric(if (upper.tail) q <= lo else q >= lo))
-      }
-      if (ncp == Inf) {
-        return(as.numeric(if (upper.tail) q <= hi else q >= hi))
-      }
-      sum(dnhyper(ncp)[if (upper.tail) support >= q else support <= q])
-    }
-    p.value <- switch(alternative,
-                      less = pnhyper(x, or), greater = pnhyper(x, or, upper.tail = TRUE),
-                      two.sided = {
-                        if (or == 0) as.numeric(x == lo) else if (or == Inf) as.numeric(x == hi) else {
-                          relErr <- 1 + 10^(-7)
-                          d <- dnhyper(or)
-                          sum(d[d <= d[x - lo + 1] * relErr])
-                        }
-                      }
-    )
-    mle <- if (x == lo) { 0 } else if (x == hi) { Inf } else {
-      mu <- mnhyper(1)
-      if (mu > x)
-        uniroot(function(t) mnhyper(t) - x, c(0, 1))$root
-      else if (mu < x)
-        1/uniroot(function(t) mnhyper(1/t) - x, c(.Machine$double.eps, 1))$root
+  if (conf.int) {
+    ncp.U <- function(x, alpha) {
+      if (x == hi) return(Inf)
+      p <- pnhyper(x, 1)
+      if (p < alpha)
+        uniroot(function(t) pnhyper(x, t) - alpha,
+                c(0, 1))$root
+      else if (p > alpha)
+        1/uniroot(function(t) pnhyper(x, 1/t) - alpha,
+                  c(.Machine$double.eps, 1))$root
       else 1
     }
-    list(estimate = mle, p.value = p.value)
-  }, lo = lo, hi = hi)
+    ncp.L <- function(x, alpha) {
+      if (x == lo) return(0)
+      p <- pnhyper(x, 1, upper.tail = TRUE)
+      if (p > alpha)
+        uniroot(function(t) pnhyper(x, t, upper.tail = TRUE) -
+                  alpha, c(0, 1))$root
+      else if (p < alpha)
+        1/uniroot(function(t) pnhyper(x, 1/t, upper.tail = TRUE) -
+                    alpha, c(.Machine$double.eps, 1))$root
+      else 1
+    }
+    CINT <- switch(alternative, less = c(0, ncp.U(x,
+                                                  1 - conf.level)), greater = c(ncp.L(x, 1 - conf.level),
+                                                                                Inf), two.sided = {
+                                                                                  alpha <- (1 - conf.level)/2
+                                                                                  c(ncp.L(x, alpha), ncp.U(x, alpha))
+                                                                                })
 
-
-  mapply(
-    \(lo, hi) {
-      support <- lo:hi
-      logdc <- dhyper(support, m, n, k, log = TRUE)
-      dnhyper <- function(ncp) {
-        d <- logdc + log(ncp) * support
-        d <- exp(d - max(d))
-        d/sum(d)
-      }
-      mnhyper <- function(ncp) {
-        if (ncp == 0)
-          return(lo)
-        if (ncp == Inf)
-          return(hi)
-        sum(support * dnhyper(ncp))
-      }
-      pnhyper <- function(q, ncp = 1, upper.tail = FALSE) {
-        if (ncp == 1) {
-          return(if (upper.tail) phyper(x - 1, m, n, k,
-                                        lower.tail = FALSE) else phyper(x, m, n, k))
-        }
-        if (ncp == 0) {
-          return(as.numeric(if (upper.tail) q <= lo else q >=
-                              lo))
-        }
-        if (ncp == Inf) {
-          return(as.numeric(if (upper.tail) q <= hi else q >=
-                              hi))
-        }
-        sum(dnhyper(ncp)[if (upper.tail) support >= q else support <=
-                           q])
-      }
-
-
-      list(estimate = mle, p.value = p.value)
-    }, lo, hi)
 }
 
 
