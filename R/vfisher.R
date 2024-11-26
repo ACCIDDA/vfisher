@@ -41,17 +41,22 @@ pnhyper <- function(
 # ncp.U == ncp_ci(..., lower = FALSE)
 # ncp.L == ncp_ci(..., lower = TRUE)
 ncp_ci <- function(x, alpha, m, n, k, lo, hi, support, logdc, lower = FALSE) {
-  if (x == hi) {
+  if (lower & x == lo) {
+    return(0)
+  } else if (!lower & x == hi) {
     return(Inf)
   } else {
     p <- pnhyper(x, 1, upper.tail = lower, m, n, k, lo, hi, support, logdc)
     ple <- p < alpha
     if (p == alpha) {
       return(1)
-    } else if (ple != lower) {
-      return(uniroot(function(t) pnhyper(x, t, upper.tail = lower, m, n, k, lo, hi, support, logdc) - alpha, c(0, 1))$root)
-    } else { # ple == lower
-      return(1/uniroot(function(t) pnhyper(x, 1/t, upper.tail = lower, m, n, k, lo, hi, support, logdc) - alpha, c(.Machine$double.eps, 1))$root)
+    } else {
+      FUN <- function(t) pnhyper(x, t, upper.tail = lower, m, n, k, lo, hi, support, logdc) - alpha
+      if (ple != lower) {
+        return(uniroot(FUN, c(0, 1))$root)
+      } else { # ple == lower
+        return(1/uniroot(function(t) FUN(1/t), c(.Machine$double.eps, 1))$root)
+      }
     }
   }
 }
