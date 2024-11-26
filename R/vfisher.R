@@ -26,31 +26,16 @@ pnhyper <- function(
   q, ncp = 1, upper.tail = FALSE, m, n, k, lo, hi, support, logdc
 ) {
 
-  lims <- which(ncp == 0 | is.infinite(ncp))
-  ones <- which(ncp == 1)
-  ncp1 <- which(ncp == 1)
-  res <- numeric(length(q))
+  if (ncp == 0) {
+    return(as.numeric(if (upper.tail) q <= lo else q >= lo))
+  } else if (is.infinite(ncp)) {
+    return(as.numeric(if (upper.tail) q <= hi else q >= hi))
+  } else if (ncp == 1) {
+    return(phyper(q - upper.tail, m, n, k, lower.tail = !upper.tail))
+  } else {
+    return(sum(dnhyper(ncp, logdc, support)[if (upper.tail) q <= support else support <= q]))
+  }
 
-  res[lims] <- ifelse(
-    ncp == 0,
-    as.numeric(if (upper.tail) q <= lo else q >= lo),
-    as.numeric(if (upper.tail) q <= hi else q >= hi)
-  )
-
-  res[ones] <- phyper(
-    x[ones] - upper.tail, m[ones], n[ones], k[ones],
-    lower.tail = !upper.tail
-  )
-
-  res[-c(ones, lims)] <- mapply(
-    function(q, ncp, logdc, support) {
-      sum(dnhyper(ncp, logdc, support)[if (upper.tail) support >= q else support <= q])
-    },
-    q = q[-c(ones, lims)], ncp = ncp[-c(ones, lims)], logdc = logdc[-c(ones, lims)],
-    support = support[-c(ones, lims)]
-  )
-
-  return(res)
 }
 
 # ncp.U == ncp_ci(..., lower = FALSE)
@@ -126,6 +111,8 @@ vfisher.test <- function(
     or <- rep(or, length.out = length(a))
   }
 
+  alternative <- match.arg(alternative)
+
   # matrix =
   # a, b
   # c, d
@@ -151,6 +138,20 @@ vfisher.test <- function(
     logdc :=  .(list(dhyper(support[[1]], m, n, k, log = TRUE))), by = rowid
   ]
 
+  if (alternative %in% c("less", "greater")) {
+    result_dt[, p.value := pnhyper(
+      a, or, upper.tail = alternative == "greater", m, n, k, lo, hi, support[[1]], logdc[[1]]
+    ), by = rowid]
+  } else {
+    result_dt[or == 0, p.value := as.numeric(a == lo)]
+    result_dt[is.infinite(or), p.value := as.numeric(a == hi)]
+    result_dt[!(or == 0 | is.infinite(or)), p.value := {
+      relErr <- 1 + 10^(-7)
+      d <- dnhyper(or, logdc[[1]], support[[1]])
+      sum(d[d <= d[a - lo + 1] * relErr])
+    }, by = rowid]
+  }
+
   # x == a
 
   result_dt[a == lo, estimate := 0]
@@ -164,15 +165,11 @@ vfisher.test <- function(
 
   if (conf.int) {
 
-    alternative <- match.arg(alternative)
-
     if (!((length(conf.level) == 1L) && is.finite(conf.level) &&
           (conf.level > 0) && (conf.level < 1)))
       stop("'conf.level' must be a single number between 0 and 1")
 
     sdcols <- c(sdcols, c("ci.lo", "ci.hi"))
-
-    setattr(result_dt, "conf.level", conf.level)
 
     if (alternative == "less") {
       result_dt[, ci.lo := 0]
@@ -188,68 +185,10 @@ vfisher.test <- function(
 
   }
 
-  result_dt[, .SD, .SDcols = sdcols]
+  res <- result_dt[, .SD, .SDcols = sdcols]
 
-}
+  if (conf.int) setattr(result_dt, "conf.level", conf.level)
 
+  return(res)
 
-function (x, y = NULL, workspace = 2e+05, hybrid = FALSE, hybridPars = c(expect = 5,
-                                                                         percent = 80, Emin = 1), control = list(), or = 1, alternative = "two.sided",
-          conf.int = TRUE, conf.level = 0.95, simulate.p.value = FALSE,
-          B = 2000)
-{
-
-  PVAL <- NULL
-  else {
-    PVAL <- switch(alternative, less = pnhyper(x, or),
-                   greater = pnhyper(x, or, upper.tail = TRUE),
-                   two.sided = {
-                     if (or == 0) as.numeric(x == lo) else if (or ==
-                                                               Inf) as.numeric(x == hi) else {
-                                                                 relErr <- 1 + 10^(-7)
-                                                                 d <- dnhyper(or)
-                                                                 sum(d[d <= d[x - lo + 1] * relErr])
-                                                               }
-                   })
-  }
-
-  ESTIMATE <- c(`odds ratio` = mle(x))
-  if (conf.int) {
-    ncp.U <- function(x, alpha) {
-      if (x == hi)
-        return(Inf)
-      p <- pnhyper(x, 1)
-      if (p < alpha)
-        uniroot(function(t) pnhyper(x, t) - alpha,
-                c(0, 1))$root
-      else if (p > alpha)
-        1/uniroot(function(t) pnhyper(x, 1/t) - alpha,
-                  c(.Machine$double.eps, 1))$root
-      else 1
-    }
-    ncp.L <- function(x, alpha) {
-      if (x == lo)
-        return(0)
-      p <- pnhyper(x, 1, upper.tail = TRUE)
-      if (p > alpha)
-        uniroot(function(t) pnhyper(x, t, upper.tail = TRUE) -
-                  alpha, c(0, 1))$root
-      else if (p < alpha)
-        1/uniroot(function(t) pnhyper(x, 1/t, upper.tail = TRUE) -
-                    alpha, c(.Machine$double.eps, 1))$root
-      else 1
-    }
-    CINT <- switch(alternative, less = c(0, ncp.U(x,
-                                                  1 - conf.level)), greater = c(ncp.L(x, 1 - conf.level),
-                                                                                Inf), two.sided = {
-                                                                                  alpha <- (1 - conf.level)/2
-                                                                                  c(ncp.L(x, alpha), ncp.U(x, alpha))
-                                                                                })
-    attr(CINT, "conf.level") <- conf.level
-  }
-  RVAL <- c(RVAL, list(conf.int = if (conf.int) CINT, estimate = ESTIMATE,
-                       null.value = NVAL))
-}
-structure(c(RVAL, alternative = alternative, method = METHOD,
-            data.name = DNAME), class = "htest")
 }
